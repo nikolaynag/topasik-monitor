@@ -4,6 +4,7 @@
 #include <ESP8266mDNS.h>
 #include <WiFiUdp.h>
 #include <ArduinoOTA.h>
+#include <PubSubClient.h>
 #include <Q2HX711.h>
 #include <Adafruit_BMP085.h>
 #include <ESP8266WiFi.h>          //https://github.com/esp8266/Arduino
@@ -11,15 +12,52 @@
 #include "secrets.h"
 
 #define HOSTNAME "topasik"
+#define MQTT_SERVER_HOST "mqtt.nikolaynag.com"
+#define MQTT_SERVER_PORT 8883
+#define MQTT_RECONNECT_MS 30000
+#define MQTT_CLIENT_ID HOSTNAME
+#define MQTT_INTERVAL_MS 10000
 
 Q2HX711 psens1(D0, D4); // data on D0, clock on D4
 Q2HX711 psens2(D5, D6); // data on D5, clock on D6
 Adafruit_BMP085 bmp; // uses pins D1 as SCL and D2 as SDA
 
-BearSSL::WiFiClientSecure secureClient;
 ESP8266WebServer webServer(80);
+BearSSL::WiFiClientSecure secureClient;
+PubSubClient mqttClient(secureClient);
+
+char sensorsJson[128];
+bool bmpStarted;
+long mqttLastReconnect;
+long mqttLastPublish;
+
+static const char caCertString[] PROGMEM = R"EOF(
+-----BEGIN CERTIFICATE-----
+MIIDSjCCAjKgAwIBAgIQRK+wgNajJ7qJMDmGLvhAazANBgkqhkiG9w0BAQUFADA/
+MSQwIgYDVQQKExtEaWdpdGFsIFNpZ25hdHVyZSBUcnVzdCBDby4xFzAVBgNVBAMT
+DkRTVCBSb290IENBIFgzMB4XDTAwMDkzMDIxMTIxOVoXDTIxMDkzMDE0MDExNVow
+PzEkMCIGA1UEChMbRGlnaXRhbCBTaWduYXR1cmUgVHJ1c3QgQ28uMRcwFQYDVQQD
+Ew5EU1QgUm9vdCBDQSBYMzCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEB
+AN+v6ZdQCINXtMxiZfaQguzH0yxrMMpb7NnDfcdAwRgUi+DoM3ZJKuM/IUmTrE4O
+rz5Iy2Xu/NMhD2XSKtkyj4zl93ewEnu1lcCJo6m67XMuegwGMoOifooUMM0RoOEq
+OLl5CjH9UL2AZd+3UWODyOKIYepLYYHsUmu5ouJLGiifSKOeDNoJjj4XLh7dIN9b
+xiqKqy69cK3FCxolkHRyxXtqqzTWMIn/5WgTe1QLyNau7Fqckh49ZLOMxt+/yUFw
+7BZy1SbsOFU5Q9D8/RhcQPGX69Wam40dutolucbY38EVAjqr2m7xPi71XAicPNaD
+aeQQmxkqtilX4+U9m5/wAl0CAwEAAaNCMEAwDwYDVR0TAQH/BAUwAwEB/zAOBgNV
+HQ8BAf8EBAMCAQYwHQYDVR0OBBYEFMSnsaR7LHH62+FLkHX/xBVghYkQMA0GCSqG
+SIb3DQEBBQUAA4IBAQCjGiybFwBcqR7uKGY3Or+Dxz9LwwmglSBd49lZRNI+DT69
+ikugdB/OEIKcdBodfpga3csTS7MgROSR6cz8faXbauX+5v3gTt23ADq1cEmv8uXr
+AvHRAosZy5Q6XkjEGB5YGV8eAlrwDPGxrancWYaLbumR9YbK+rlmM6pZW87ipxZz
+R8srzJmwN0jP41ZL9c8PDHIyh8bwRLtTcm1D9SZImlJnt1ir/md2cXjbDaJWFBM5
+JDGFoqgCWjBH4d1QB7wCCZAA62RjYJsWvIjJEubSfZGL+T0yjWW06XyxV3bqxbYo
+Ob8VZRzI9neWagqNdwvYkQsEjgfbKbYK7p2CNTUQ
+-----END CERTIFICATE-----
+)EOF";
+BearSSL::X509List caCert(caCertString);
+
 
 void handleRoot();
+void handleSensors();
 void handleNotFound();
 
 void initOTA(){
@@ -42,10 +80,6 @@ void initWiFi() {
   Serial.println(WiFi.localIP());  
 }
 
-float p1, p2;
-int current;
-float temp, pressure;
-bool bmpStarted;
 
 void initSensors(){
   bmpStarted = bmp.begin();
@@ -73,30 +107,7 @@ void setClock() {
 }
 
 void initSecureClient() {
-  static const char digicert[] PROGMEM = R"EOF(
------BEGIN CERTIFICATE-----
-MIIDSjCCAjKgAwIBAgIQRK+wgNajJ7qJMDmGLvhAazANBgkqhkiG9w0BAQUFADA/
-MSQwIgYDVQQKExtEaWdpdGFsIFNpZ25hdHVyZSBUcnVzdCBDby4xFzAVBgNVBAMT
-DkRTVCBSb290IENBIFgzMB4XDTAwMDkzMDIxMTIxOVoXDTIxMDkzMDE0MDExNVow
-PzEkMCIGA1UEChMbRGlnaXRhbCBTaWduYXR1cmUgVHJ1c3QgQ28uMRcwFQYDVQQD
-Ew5EU1QgUm9vdCBDQSBYMzCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEB
-AN+v6ZdQCINXtMxiZfaQguzH0yxrMMpb7NnDfcdAwRgUi+DoM3ZJKuM/IUmTrE4O
-rz5Iy2Xu/NMhD2XSKtkyj4zl93ewEnu1lcCJo6m67XMuegwGMoOifooUMM0RoOEq
-OLl5CjH9UL2AZd+3UWODyOKIYepLYYHsUmu5ouJLGiifSKOeDNoJjj4XLh7dIN9b
-xiqKqy69cK3FCxolkHRyxXtqqzTWMIn/5WgTe1QLyNau7Fqckh49ZLOMxt+/yUFw
-7BZy1SbsOFU5Q9D8/RhcQPGX69Wam40dutolucbY38EVAjqr2m7xPi71XAicPNaD
-aeQQmxkqtilX4+U9m5/wAl0CAwEAAaNCMEAwDwYDVR0TAQH/BAUwAwEB/zAOBgNV
-HQ8BAf8EBAMCAQYwHQYDVR0OBBYEFMSnsaR7LHH62+FLkHX/xBVghYkQMA0GCSqG
-SIb3DQEBBQUAA4IBAQCjGiybFwBcqR7uKGY3Or+Dxz9LwwmglSBd49lZRNI+DT69
-ikugdB/OEIKcdBodfpga3csTS7MgROSR6cz8faXbauX+5v3gTt23ADq1cEmv8uXr
-AvHRAosZy5Q6XkjEGB5YGV8eAlrwDPGxrancWYaLbumR9YbK+rlmM6pZW87ipxZz
-R8srzJmwN0jP41ZL9c8PDHIyh8bwRLtTcm1D9SZImlJnt1ir/md2cXjbDaJWFBM5
-JDGFoqgCWjBH4d1QB7wCCZAA62RjYJsWvIjJEubSfZGL+T0yjWW06XyxV3bqxbYo
-Ob8VZRzI9neWagqNdwvYkQsEjgfbKbYK7p2CNTUQ
------END CERTIFICATE-----
-)EOF";
-  BearSSL::X509List cert(digicert);
-  secureClient.setTrustAnchors(&cert);
+  secureClient.setTrustAnchors(&caCert);
 }
 
 void setup() {
@@ -106,12 +117,28 @@ void setup() {
   initOTA();
   initSensors();
   webServer.on("/", handleRoot);
+  webServer.on("/sensors", handleSensors);
   webServer.onNotFound(handleNotFound);
   webServer.begin();
   setClock();
   initSecureClient();
+  mqttClient.setServer(MQTT_SERVER_HOST, MQTT_SERVER_PORT);
+  mqttLastReconnect = 0;
+  mqttLastPublish = 0;
   delay(1000);
   Serial.println("Setup finished.");  
+}
+
+void handleRoot() {
+  webServer.send(200, "text/plain", HOSTNAME "\n");
+}
+
+void handleSensors() {
+  webServer.send(200, "application/json", sensorsJson);
+}
+
+void handleNotFound() {
+  webServer.send(404, "text/plain", "Not Found" "\n");
 }
 
 int measureCurrent(){
@@ -132,15 +159,30 @@ int measureCurrent(){
     return maxv - minv;
 }
 
-void printValues(){
-  Serial.print("p1: "); Serial.println(p1, 0);
-  Serial.print("p2: "); Serial.println(p2, 0);
-  Serial.print("temp: "); Serial.println(temp);
-  Serial.print("press: "); Serial.println(pressure);
-  Serial.print("current: "); Serial.println(current);
-  Serial.print("\n");
-  Serial.flush();
-  
+bool mqttEnsureConnect() {
+  if(mqttClient.connected()) {
+    return true;
+  }
+  long now = millis();
+  if (now - mqttLastReconnect < MQTT_RECONNECT_MS) {
+    return false;
+  }
+  mqttClient.connect(MQTT_CLIENT_ID, MQTT_USER, MQTT_PASSWORD);
+  mqttLastReconnect = millis();
+  return mqttClient.connected();
+}
+
+void mqttLoop(){
+  if (!mqttEnsureConnect()) {
+    return;
+  }
+  mqttClient.loop();
+  long now = millis();
+  if(now - mqttLastPublish < MQTT_INTERVAL_MS) {
+    return;
+  }
+  mqttClient.publish(HOSTNAME "-sensors", sensorsJson);
+  mqttLastPublish = now;
 }
 
 void loop() {
@@ -148,31 +190,25 @@ void loop() {
       webServer.handleClient(); // Listen for HTTP requests from clients
       ArduinoOTA.handle();      
       delay(50);
-    }  
-    p1 = psens1.read()/100.0;
-    p2 = psens2.read()/100.0;
+    }
+
+    float temp, pressure;
+    float p1 = psens1.read()/100.0;
+    float p2 = psens2.read()/100.0;
     if(bmpStarted){
       temp = bmp.readTemperature();
       pressure = bmp.readPressure()/100;     
     }
-    current = measureCurrent();
-    printValues();
-}
+    int current = measureCurrent();
 
-void handleRoot() {
-  StaticJsonDocument<128> doc;
-  doc["ts"] = time(nullptr);
-  doc["lp1"] = p1;
-  doc["lp2"] = p2;
-  doc["temp"] = temp;
-  doc["pressure"] = pressure;
-  doc["current"] = current;
-  char body[128];
-  serializeJson(doc, body);
-  webServer.send(200, "application/json", body);
-}
+    StaticJsonDocument<128> doc;
+    doc["ts"] = time(nullptr);
+    doc["lp1"] = p1;
+    doc["lp2"] = p2;
+    doc["temp"] = temp;
+    doc["pressure"] = pressure;
+    doc["current"] = current;
+    serializeJson(doc, sensorsJson);
 
-void handleNotFound() {
-  String message = "File Not Found\n\n";
-  webServer.send(404, "text/plain", message);
+    mqttLoop();
 }
