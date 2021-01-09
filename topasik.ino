@@ -16,7 +16,7 @@ Q2HX711 psens1(D0, D4); // data on D0, clock on D4
 Q2HX711 psens2(D5, D6); // data on D5, clock on D6
 Adafruit_BMP085 bmp; // uses pins D1 as SCL and D2 as SDA
 
-WiFiClient espClient;
+BearSSL::WiFiClientSecure secureClient;
 ESP8266WebServer webServer(80);
 
 void handleRoot();
@@ -55,6 +55,50 @@ void initSensors(){
   }    
 }
 
+// Set time via NTP, as required for x.509 validation
+void setClock() {
+  const time_t minTimestamp = 8*3600;
+  configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+  Serial.print("Waiting for NTP time sync: ");
+  time_t now = time(nullptr);
+  for (int i = 0; i < 100 && now < minTimestamp; i++) {
+    delay(500);
+    Serial.print(".");
+    now = time(nullptr);
+  }
+  if (now < minTimestamp) {
+    Serial.println("Failed to set time via NTP");
+  }
+  Serial.println("Current time: " + String(now));
+}
+
+void initSecureClient() {
+  static const char digicert[] PROGMEM = R"EOF(
+-----BEGIN CERTIFICATE-----
+MIIDSjCCAjKgAwIBAgIQRK+wgNajJ7qJMDmGLvhAazANBgkqhkiG9w0BAQUFADA/
+MSQwIgYDVQQKExtEaWdpdGFsIFNpZ25hdHVyZSBUcnVzdCBDby4xFzAVBgNVBAMT
+DkRTVCBSb290IENBIFgzMB4XDTAwMDkzMDIxMTIxOVoXDTIxMDkzMDE0MDExNVow
+PzEkMCIGA1UEChMbRGlnaXRhbCBTaWduYXR1cmUgVHJ1c3QgQ28uMRcwFQYDVQQD
+Ew5EU1QgUm9vdCBDQSBYMzCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEB
+AN+v6ZdQCINXtMxiZfaQguzH0yxrMMpb7NnDfcdAwRgUi+DoM3ZJKuM/IUmTrE4O
+rz5Iy2Xu/NMhD2XSKtkyj4zl93ewEnu1lcCJo6m67XMuegwGMoOifooUMM0RoOEq
+OLl5CjH9UL2AZd+3UWODyOKIYepLYYHsUmu5ouJLGiifSKOeDNoJjj4XLh7dIN9b
+xiqKqy69cK3FCxolkHRyxXtqqzTWMIn/5WgTe1QLyNau7Fqckh49ZLOMxt+/yUFw
+7BZy1SbsOFU5Q9D8/RhcQPGX69Wam40dutolucbY38EVAjqr2m7xPi71XAicPNaD
+aeQQmxkqtilX4+U9m5/wAl0CAwEAAaNCMEAwDwYDVR0TAQH/BAUwAwEB/zAOBgNV
+HQ8BAf8EBAMCAQYwHQYDVR0OBBYEFMSnsaR7LHH62+FLkHX/xBVghYkQMA0GCSqG
+SIb3DQEBBQUAA4IBAQCjGiybFwBcqR7uKGY3Or+Dxz9LwwmglSBd49lZRNI+DT69
+ikugdB/OEIKcdBodfpga3csTS7MgROSR6cz8faXbauX+5v3gTt23ADq1cEmv8uXr
+AvHRAosZy5Q6XkjEGB5YGV8eAlrwDPGxrancWYaLbumR9YbK+rlmM6pZW87ipxZz
+R8srzJmwN0jP41ZL9c8PDHIyh8bwRLtTcm1D9SZImlJnt1ir/md2cXjbDaJWFBM5
+JDGFoqgCWjBH4d1QB7wCCZAA62RjYJsWvIjJEubSfZGL+T0yjWW06XyxV3bqxbYo
+Ob8VZRzI9neWagqNdwvYkQsEjgfbKbYK7p2CNTUQ
+-----END CERTIFICATE-----
+)EOF";
+  BearSSL::X509List cert(digicert);
+  secureClient.setTrustAnchors(&cert);
+}
+
 void setup() {
   Serial.begin(115200);
   Serial.println();
@@ -64,6 +108,8 @@ void setup() {
   webServer.on("/", handleRoot);
   webServer.onNotFound(handleNotFound);
   webServer.begin();
+  setClock();
+  initSecureClient();
   delay(1000);
   Serial.println("Setup finished.");  
 }
@@ -115,6 +161,7 @@ void loop() {
 
 void handleRoot() {
   StaticJsonDocument<128> doc;
+  doc["ts"] = time(nullptr);
   doc["lp1"] = p1;
   doc["lp2"] = p2;
   doc["temp"] = temp;
