@@ -21,13 +21,11 @@
 Q2HX711 psens1(D0, D4); // data on D0, clock on D4
 Q2HX711 psens2(D5, D6); // data on D5, clock on D6
 Adafruit_BMP085 bmp; // uses pins D1 as SCL and D2 as SDA
+bool bmpStarted;
+char sensorsJson[128];
 
-ESP8266WebServer webServer(80);
 BearSSL::WiFiClientSecure secureClient;
 PubSubClient mqttClient(secureClient);
-
-char sensorsJson[128];
-bool bmpStarted;
 long mqttLastReconnect;
 long mqttLastPublish;
 
@@ -55,11 +53,6 @@ Ob8VZRzI9neWagqNdwvYkQsEjgfbKbYK7p2CNTUQ
 )EOF";
 BearSSL::X509List caCert(caCertString);
 
-
-void handleRoot();
-void handleSensors();
-void handleNotFound();
-
 void initOTA(){
   ArduinoOTA.setHostname(HOSTNAME);
   ArduinoOTA.setPasswordHash(OTA_UPDATE_PASSWORD_HASH);
@@ -77,16 +70,16 @@ void initWiFi() {
   }
   Serial.println("connected to WiFi");
   Serial.println("local ip: ");
-  Serial.println(WiFi.localIP());  
+  Serial.println(WiFi.localIP());
 }
 
 
 void initSensors(){
   bmpStarted = bmp.begin();
-  if (!bmpStarted) 
+  if (!bmpStarted)
   {
     Serial.println("Error starting BMP180 sensor");
-  }    
+  }
 }
 
 // Set time via NTP, as required for x.509 validation
@@ -110,35 +103,23 @@ void initSecureClient() {
   secureClient.setTrustAnchors(&caCert);
 }
 
+void initMQTT(){
+  mqttClient.setServer(MQTT_SERVER_HOST, MQTT_SERVER_PORT);
+  mqttLastReconnect = 0;
+  mqttLastPublish = 0;
+}
+
 void setup() {
   Serial.begin(115200);
   Serial.println();
   initWiFi();
   initOTA();
   initSensors();
-  webServer.on("/", handleRoot);
-  webServer.on("/sensors", handleSensors);
-  webServer.onNotFound(handleNotFound);
-  webServer.begin();
   setClock();
   initSecureClient();
-  mqttClient.setServer(MQTT_SERVER_HOST, MQTT_SERVER_PORT);
-  mqttLastReconnect = 0;
-  mqttLastPublish = 0;
+  initMQTT();
   delay(1000);
-  Serial.println("Setup finished.");  
-}
-
-void handleRoot() {
-  webServer.send(200, "text/plain", HOSTNAME "\n");
-}
-
-void handleSensors() {
-  webServer.send(200, "application/json", sensorsJson);
-}
-
-void handleNotFound() {
-  webServer.send(404, "text/plain", "Not Found" "\n");
+  Serial.println("Setup finished.");
 }
 
 int measureCurrent(){
@@ -154,7 +135,7 @@ int measureCurrent(){
       if (value < minv) {
         minv = value;
       }
-      delay(2); 
+      delay(2);
     }
     return maxv - minv;
 }
@@ -187,8 +168,7 @@ void mqttLoop(){
 
 void loop() {
     for(int i = 0; i < 10; i++) {
-      webServer.handleClient(); // Listen for HTTP requests from clients
-      ArduinoOTA.handle();      
+      ArduinoOTA.handle();
       delay(50);
     }
 
@@ -197,7 +177,7 @@ void loop() {
     float p2 = psens2.read()/100.0;
     if(bmpStarted){
       temp = bmp.readTemperature();
-      pressure = bmp.readPressure()/100;     
+      pressure = bmp.readPressure()/100;
     }
     int current = measureCurrent();
 
