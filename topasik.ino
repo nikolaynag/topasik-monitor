@@ -122,24 +122,6 @@ void setup() {
   Serial.println("Setup finished.");
 }
 
-int measureCurrent(){
-    int i;
-    const int cnt = 10;
-    int minv = 1025;
-    int maxv = -1;
-    for(i = 0; i < cnt; i++) {
-      int value = analogRead(A0);
-      if (value > maxv) {
-        maxv = value;
-      }
-      if (value < minv) {
-        minv = value;
-      }
-      delay(2);
-    }
-    return maxv - minv;
-}
-
 bool mqttEnsureConnect() {
   if(mqttClient.connected()) {
     return true;
@@ -166,29 +148,50 @@ void mqttLoop(){
   mqttLastPublish = now;
 }
 
+int measureCurrent(){
+    int i;
+    const int cnt = 10;
+    int minv = 1025;
+    int maxv = -1;
+    for(i = 0; i < cnt; i++) {
+      int value = analogRead(A0);
+      if (value > maxv) {
+        maxv = value;
+      }
+      if (value < minv) {
+        minv = value;
+      }
+      delay(2);
+    }
+    return maxv - minv;
+}
+
+void updateSensorsJson() {
+  float temp, pressure;
+  float p1 = psens1.read()/100.0;
+  float p2 = psens2.read()/100.0;
+  if(bmpStarted){
+    temp = bmp.readTemperature();
+    pressure = bmp.readPressure()/100;
+  }
+  int current = measureCurrent();
+
+  StaticJsonDocument<128> doc;
+  doc["ts"] = time(nullptr);
+  doc["lp1"] = p1;
+  doc["lp2"] = p2;
+  doc["at"] = temp;
+  doc["ap"] = pressure;
+  doc["current"] = current;
+  doc["millis"] = millis();
+  serializeJson(doc, sensorsJson);
+}
+
 void loop() {
     for(int i = 0; i < 10; i++) {
       ArduinoOTA.handle();
       delay(50);
     }
-
-    float temp, pressure;
-    float p1 = psens1.read()/100.0;
-    float p2 = psens2.read()/100.0;
-    if(bmpStarted){
-      temp = bmp.readTemperature();
-      pressure = bmp.readPressure()/100;
-    }
-    int current = measureCurrent();
-
-    StaticJsonDocument<128> doc;
-    doc["ts"] = time(nullptr);
-    doc["lp1"] = p1;
-    doc["lp2"] = p2;
-    doc["temp"] = temp;
-    doc["pressure"] = pressure;
-    doc["current"] = current;
-    serializeJson(doc, sensorsJson);
-
+    updateSensorsJson();
     mqttLoop();
 }
