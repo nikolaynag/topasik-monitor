@@ -1,0 +1,3 @@
+(sym_lib_table
+  (lib (name topasik-symbols)(type Legacy)(uri ${KIPRJMOD}/topasik-symbols.lib)(options "")(descr ""))
+)
